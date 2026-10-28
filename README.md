@@ -53,7 +53,7 @@ A high-performance, multi-threaded **HTTP/1.1 Server & Reverse Proxy** implement
 ### 1. Build and Run
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/core-proxy.git
+git clone https://github.com/pranav2020-pixel/core-proxy.git
 cd core-proxy
 
 # Run the server
@@ -80,7 +80,7 @@ go test -v -race ./...
 
 ---
 
-## Core CS Concepts Mastered
+## Core CS Concepts Used
 
 1. **Operating Systems:** Socket system calls (`socket`, `bind`, `listen`, `accept`), file descriptors, and non-blocking worker thread pools.
 2. **Computer Networks:** The HTTP/1.1 wire protocol, Keep-Alive connection semantics, header tokenization, and proxy forwarding.
