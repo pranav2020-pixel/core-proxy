@@ -9,35 +9,25 @@ import (
 	"strings"
 )
 
-// Common HTTP errors encountered when parsing raw wire streams.
 var (
 	ErrMalformedRequestLine = errors.New("malformed http request line")
 	ErrMalformedHeader      = errors.New("malformed header entry")
 	ErrBodyTooLarge         = errors.New("request payload exceeded maximum allowed limit")
 )
 
-// MaxHeaderBytes defines a defensive boundary against Slowloris and memory exhaustion attacks.
-const MaxHeaderBytes = 64 * 1024 // 64 KB
+const MaxHeaderBytes = 64 * 1024
 
-// Request represents a parsed HTTP/1.1 request conforming to RFC 7230.
 type Request struct {
-	Method     string            // GET, POST, PUT, DELETE, etc.
-	Path       string            // Requested URI path (e.g., /index.html)
-	Proto      string            // HTTP/1.1
-	Headers    map[string]string // Key-value headers stored in lowercase for fast, normalized lookup
-	Body       []byte            // Payload bytes (if Content-Length is specified)
-	RemoteAddr string            // The client's IP:Port as reported by the TCP socket
+	Method     string
+	Path       string
+	Proto      string
+	Headers    map[string]string
+	Body       []byte
+	RemoteAddr string
 }
 
-// ParseRequest streams bytes from a buffered TCP socket and constructs a structured Request.
-//
-// Professor's Note:
-// In the HTTP/1.1 wire specification, headers are ASCII strings delimited by CRLF (\r\n).
-// The first line is the "Request-Line" containing: [Method] [SP] [Request-URI] [SP] [HTTP-Version] CRLF.
-// Following the Request-Line are zero or more "Header-Field" lines.
-// An empty CRLF line marks the end of headers and the beginning of the body.
+// ParseRequest reads and parses an HTTP/1.1 wire request from r.
 func ParseRequest(r *bufio.Reader, remoteAddr string) (*Request, error) {
-	// 1. Read the Request-Line
 	requestLine, err := r.ReadString('\n')
 	if err != nil {
 		return nil, err
@@ -57,7 +47,6 @@ func ParseRequest(r *bufio.Reader, remoteAddr string) (*Request, error) {
 		RemoteAddr: remoteAddr,
 	}
 
-	// 2. Read Headers iteratively until encountering an empty line ("\r\n" or "")
 	totalHeaderSize := 0
 	for {
 		line, err := r.ReadString('\n')
@@ -67,16 +56,14 @@ func ParseRequest(r *bufio.Reader, remoteAddr string) (*Request, error) {
 
 		totalHeaderSize += len(line)
 		if totalHeaderSize > MaxHeaderBytes {
-			return nil, errors.New("header size exceeds security threshold")
+			return nil, errors.New("header size exceeds limit")
 		}
 
-		// CRLF on an empty line means we reached the end of headers
 		trimmed := strings.TrimRight(line, "\r\n")
 		if trimmed == "" {
 			break
 		}
 
-		// Header format: "Key: Value"
 		colonIdx := strings.Index(trimmed, ":")
 		if colonIdx == -1 {
 			return nil, fmt.Errorf("%w: '%s'", ErrMalformedHeader, trimmed)
@@ -87,17 +74,15 @@ func ParseRequest(r *bufio.Reader, remoteAddr string) (*Request, error) {
 		req.Headers[key] = val
 	}
 
-	// 3. Read Body (if Content-Length header is present)
 	if clStr, ok := req.Headers["content-length"]; ok {
 		contentLength, err := strconv.Atoi(clStr)
 		if err == nil && contentLength > 0 {
-			if contentLength > 10*1024*1024 { // 10 MB sanity limit
+			if contentLength > 10*1024*1024 {
 				return nil, ErrBodyTooLarge
 			}
 			bodyBuf := make([]byte, contentLength)
-			_, err = io.ReadFull(r, bodyBuf)
-			if err != nil {
-				return nil, fmt.Errorf("failed reading request body: %w", err)
+			if _, err = io.ReadFull(r, bodyBuf); err != nil {
+				return nil, fmt.Errorf("failed reading body: %w", err)
 			}
 			req.Body = bodyBuf
 		}

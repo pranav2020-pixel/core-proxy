@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/url"
 	"strings"
@@ -14,13 +15,10 @@ import (
 	customHttp "core-proxy/internal/http"
 )
 
-// Backend represents a target upstream service.
 type Backend struct {
-	URL          *url.URL
-	Alive        bool
-	mux          sync.RWMutex
-	Failures     int
-	SuccessCount int
+	URL   *url.URL
+	Alive bool
+	mux   sync.RWMutex
 }
 
 func (b *Backend) SetAlive(alive bool) {
@@ -35,13 +33,11 @@ func (b *Backend) IsAlive() bool {
 	return b.Alive
 }
 
-// LoadBalancer coordinates request routing across healthy upstream services.
 type LoadBalancer struct {
 	backends []*Backend
 	current  uint64
 }
 
-// NewLoadBalancer initializes backends from raw URL strings.
 func NewLoadBalancer(targetURLs []string) (*LoadBalancer, error) {
 	var backends []*Backend
 	for _, raw := range targetURLs {
@@ -60,14 +56,13 @@ func NewLoadBalancer(targetURLs []string) (*LoadBalancer, error) {
 	return lb, nil
 }
 
-// NextBackend selects the next available upstream using lock-free atomic Round-Robin.
+// NextBackend selects the next available backend using round-robin.
 func (lb *LoadBalancer) NextBackend() *Backend {
 	total := uint64(len(lb.backends))
 	if total == 0 {
 		return nil
 	}
 
-	// Try up to `total` times to find an alive backend
 	for i := uint64(0); i < total; i++ {
 		idx := atomic.AddUint64(&lb.current, 1) % total
 		b := lb.backends[idx]
@@ -76,18 +71,16 @@ func (lb *LoadBalancer) NextBackend() *Backend {
 		}
 	}
 
-	return nil // All upstreams are currently down
+	return nil
 }
 
-// Forward transmits the client's request to the selected upstream backend,
-// mutating headers to conform with standard reverse proxy conventions (X-Forwarded-For).
+// Forward relays req to a healthy backend and returns the backend's response.
 func (lb *LoadBalancer) Forward(req *customHttp.Request) (*customHttp.Response, error) {
 	target := lb.NextBackend()
 	if target == nil {
-		return customHttp.NewResponse(503, []byte("503 Service Unavailable: All upstream servers are offline\n")), nil
+		return customHttp.NewResponse(503, []byte("503 Service Unavailable: No healthy upstreams\n")), nil
 	}
 
-	// Dial the upstream host over raw TCP
 	host := target.URL.Host
 	if !strings.Contains(host, ":") {
 		host = host + ":80"
@@ -96,12 +89,10 @@ func (lb *LoadBalancer) Forward(req *customHttp.Request) (*customHttp.Response, 
 	upstreamConn, err := net.DialTimeout("tcp", host, 3*time.Second)
 	if err != nil {
 		target.SetAlive(false)
-		return customHttp.NewResponse(502, []byte(fmt.Sprintf("502 Bad Gateway: Failed to connect to %s\n", target.URL.String()))), nil
+		return customHttp.NewResponse(502, []byte(fmt.Sprintf("502 Bad Gateway: %v\n", err))), nil
 	}
 	defer upstreamConn.Close()
 
-	// 1. Construct modified headers for the upstream server
-	// Append client IP to X-Forwarded-For
 	clientIP, _, _ := net.SplitHostPort(req.RemoteAddr)
 	if existing, ok := req.Headers["x-forwarded-for"]; ok {
 		req.Headers["x-forwarded-for"] = existing + ", " + clientIP
@@ -111,14 +102,14 @@ func (lb *LoadBalancer) Forward(req *customHttp.Request) (*customHttp.Response, 
 	req.Headers["host"] = target.URL.Host
 	req.Headers["connection"] = "close"
 
-	// 2. Transmit the request to the upstream server
-	requestBuffer := fmt.Sprintf("%s %s %s\r\n", req.Method, req.Path, req.Proto)
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s %s %s\r\n", req.Method, req.Path, req.Proto)
 	for k, v := range req.Headers {
-		requestBuffer += fmt.Sprintf("%s: %s\r\n", k, v)
+		fmt.Fprintf(&b, "%s: %s\r\n", k, v)
 	}
-	requestBuffer += "\r\n"
+	b.WriteString("\r\n")
 
-	if _, err := io.WriteString(upstreamConn, requestBuffer); err != nil {
+	if _, err := io.WriteString(upstreamConn, b.String()); err != nil {
 		return nil, fmt.Errorf("failed sending request to upstream: %w", err)
 	}
 
@@ -128,11 +119,9 @@ func (lb *LoadBalancer) Forward(req *customHttp.Request) (*customHttp.Response, 
 		}
 	}
 
-	// 3. Read the upstream response using custom parser
 	upstreamReader := bufio.NewReader(upstreamConn)
 	upstreamResp, err := customHttp.ParseRequest(upstreamReader, upstreamConn.RemoteAddr().String())
 	if err != nil {
-		// If upstream returns a direct standard response, read until EOF
 		rawResp, _ := io.ReadAll(upstreamReader)
 		return customHttp.NewResponse(200, rawResp), nil
 	}
@@ -140,7 +129,6 @@ func (lb *LoadBalancer) Forward(req *customHttp.Request) (*customHttp.Response, 
 	return customHttp.NewResponse(200, upstreamResp.Body), nil
 }
 
-// startHealthChecks periodically polls upstreams to update their availability state.
 func (lb *LoadBalancer) startHealthChecks(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	for range ticker.C {
@@ -153,13 +141,13 @@ func (lb *LoadBalancer) startHealthChecks(interval time.Duration) {
 			conn, err := net.DialTimeout("tcp", host, 1*time.Second)
 			if err != nil {
 				if b.IsAlive() {
-					fmt.Printf("[HEALTH CHECK] ❌ Backend down: %s\n", b.URL.String())
+					log.Printf("backend offline: %s", b.URL.String())
 					b.SetAlive(false)
 				}
 			} else {
 				conn.Close()
 				if !b.IsAlive() {
-					fmt.Printf("[HEALTH CHECK] ✅ Backend recovered: %s\n", b.URL.String())
+					log.Printf("backend recovered: %s", b.URL.String())
 					b.SetAlive(true)
 				}
 			}

@@ -58,15 +58,7 @@ func StatusText(code int) string {
 	}
 }
 
-// WriteTo writes the formatted HTTP/1.1 wire protocol directly into an output stream (e.g. net.Conn).
-//
-// Professor's Note:
-// Format:
-// HTTP/1.1 [StatusCode] [ReasonPhrase] CRLF
-// [Header-Name]: [Header-Value] CRLF
-// ...
-// CRLF
-// [Payload Bytes]
+// WriteTo serializes the response into RFC 7230 compliant HTTP wire bytes.
 func (resp *Response) WriteTo(w io.Writer) error {
 	statusLine := fmt.Sprintf("HTTP/1.1 %d %s\r\n", resp.StatusCode, StatusText(resp.StatusCode))
 	if _, err := io.WriteString(w, statusLine); err != nil {
